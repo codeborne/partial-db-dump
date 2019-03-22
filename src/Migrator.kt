@@ -13,16 +13,18 @@ class Migrator(private val dbUrl: String) {
       foreignKeys.forEach {
         if (it.pkTable == it.fkTable) println("Warn: $it")
         else {
-          tables[it.fkTable]!!.dependsOn += tables[it.pkTable]!!
-          tables[it.pkTable]!!.dependants += it
+          tables[it.fkTable]!!.apply {
+            this.dependsOn += tables[it.pkTable]!!
+            this.foreignKeys += it
+          }
         }
       }
 
       val orderedTablesByDependency = topologicalSort(tables.values)
       println("${tables.size} ${orderedTablesByDependency.size}")
-      println(orderedTablesByDependency.joinToString("\n"))
 
-      populateKeys(conn, orderedTablesByDependency, 10)
+      fetchKeys(conn, tables, orderedTablesByDependency, 10)
+      println(orderedTablesByDependency.joinToString("\n") { "${it.name}: ${it.keysToExtract}" })
     }
   }
 
@@ -58,11 +60,19 @@ class Migrator(private val dbUrl: String) {
     return result
   }
 
-  private fun populateKeys(conn: Connection, tablesByDependency: List<Table>, num: Int) {
-    tablesByDependency.asReversed().forEach { table ->
-      if (table.primaryKey != null)
-        table.keysToExtract.addAll(
-          conn.prepareStatement("""select * from (select "${table.primaryKey}" from "${table.name}" order by "${table.primaryKey}" desc) where rownum <= $num""").readAll { it[1] })
+  private fun fetchKeys(conn: Connection, tables: Map<String, Table>, tableOrder: List<Table>, num: Int) {
+    tableOrder.asReversed().forEach { table ->
+      if (table.primaryKey != null) {
+        val columns = setOf(table.primaryKey) + table.foreignKeys.map { it.fkColumn }
+        val columnsString = columns.joinToString { """"$it"""" }
+        val sql = """select * from (select $columnsString from "${table.name}" order by "${table.primaryKey}" desc) where rownum <= $num"""
+        table.keysToExtract.addAll(conn.prepareStatement(sql).readAll {rs ->
+          table.foreignKeys.forEach {
+            tables[it.pkTable]!!.keysToExtract += rs[it.fkColumn]
+          }
+          rs[1]
+        })
+      }
     }
   }
 }
@@ -78,7 +88,7 @@ data class ForeignKey(
 
 data class Table(val name: String, val primaryKey: String?) {
   val dependsOn = mutableSetOf<Table>()
-  val dependants = mutableSetOf<ForeignKey>()
+  val foreignKeys = mutableSetOf<ForeignKey>()
   val keysToExtract = mutableSetOf<Any>()
 
   override fun toString() = "$name -> ${dependsOn.joinToString { it.name }}"
