@@ -5,8 +5,7 @@ class Migrator(private val dbUrl: String) {
   fun migrate() {
     DriverManager.getConnection(dbUrl).use { conn ->
       val metaData = conn.metaData
-      val tables = listTables(metaData)
-      println(findDependencies(metaData).toList())
+      println(listForeignKeys(metaData).joinToString("\n"))
     }
   }
 
@@ -15,7 +14,7 @@ class Migrator(private val dbUrl: String) {
       it["TABLE_NAME"]
     }
 
-  private fun findDependencies(metaData: DatabaseMetaData) =
+  private fun listForeignKeys(metaData: DatabaseMetaData) =
     metaData.getImportedKeys(null, metaData.userName, null).readAll {
       ForeignKey(it["FKTABLE_NAME"], it["FKCOLUMN_NAME"], it["PKTABLE_NAME"], it["PKCOLUMN_NAME"])
     }
