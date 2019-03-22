@@ -15,9 +15,9 @@ class Migrator(private val dbUrl: String) {
         else tables[it.fkTable]!!.dependsOn += tables[it.pkTable]!!
       }
 
-      val tableList = topologicalSortDepthFirst(tables.values)
-      println("${tables.size} ${tableList.size}")
-      println(tableList.joinToString("\n"))
+      val orderedTablesByDependency = topologicalSort(tables.values)
+      println("${tables.size} ${orderedTablesByDependency.size}")
+      println(orderedTablesByDependency.joinToString("\n"))
     }
   }
 
@@ -31,7 +31,7 @@ class Migrator(private val dbUrl: String) {
       ForeignKey(it["FKTABLE_NAME"], it["FKCOLUMN_NAME"], it["PKTABLE_NAME"], it["PKCOLUMN_NAME"])
     }
 
-  private fun topologicalSortDepthFirst(tables: Collection<Table>): List<Table> {
+  private fun topologicalSort(tables: Collection<Table>): List<Table> {
     val result = LinkedList<Table>()
     val marked = mutableMapOf<Table, Boolean>()
 
@@ -41,7 +41,7 @@ class Migrator(private val dbUrl: String) {
       marked[n] = false
       n.dependsOn.forEach { visit(it) }
       marked[n] = true
-      result.addFirst(n)
+      result += n
     }
 
     while (marked.size < tables.size) {
@@ -61,7 +61,7 @@ data class ForeignKey(
 }
 
 data class Table(val name: String) {
-  val dependsOn =  mutableSetOf<Table>()
+  val dependsOn = mutableSetOf<Table>()
 
   override fun toString() = "$name -> ${dependsOn.joinToString { it.name }}"
 }
