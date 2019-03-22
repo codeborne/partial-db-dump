@@ -5,7 +5,14 @@ class Migrator(private val dbUrl: String) {
   fun migrate() {
     DriverManager.getConnection(dbUrl).use { conn ->
       val metaData = conn.metaData
-      println(listForeignKeys(metaData).joinToString("\n"))
+      val tables = listTables(metaData)
+      val foreignKeys = listForeignKeys(metaData)
+      val tableDependencies = foreignKeys.groupBy { it.pkTable }
+
+      println(tableDependencies.entries.joinToString("\n"))
+
+      val tablesNoDeps = tables.filter { !tableDependencies.containsKey(it) }.toList()
+      println(tablesNoDeps.size)
     }
   }
 
@@ -18,6 +25,7 @@ class Migrator(private val dbUrl: String) {
     metaData.getImportedKeys(null, metaData.userName, null).readAll {
       ForeignKey(it["FKTABLE_NAME"], it["FKCOLUMN_NAME"], it["PKTABLE_NAME"], it["PKCOLUMN_NAME"])
     }
+
 }
 
 data class ForeignKey(
