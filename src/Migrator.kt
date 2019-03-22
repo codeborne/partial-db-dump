@@ -68,7 +68,7 @@ class Migrator(private val dbUrl: String) {
         val sql = """select * from (select $columnsString from "${table.name}" order by "${table.primaryKey}" desc) where rownum <= $num"""
         table.keysToExtract.addAll(conn.prepareStatement(sql).readAll {rs ->
           table.foreignKeys.forEach {
-            tables[it.pkTable]!!.keysToExtract += rs[it.fkColumn]
+            rs[it.fkColumn]?.let { value -> tables[it.pkTable]!!.keysToExtract += value }
           }
           rs[1]
         })
