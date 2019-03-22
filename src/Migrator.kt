@@ -1,4 +1,4 @@
-import java.lang.IllegalStateException
+import java.sql.Connection
 import java.sql.DatabaseMetaData
 import java.sql.DriverManager
 import java.util.*
@@ -12,19 +12,27 @@ class Migrator(private val dbUrl: String) {
       val foreignKeys = listForeignKeys(metaData)
       foreignKeys.forEach {
         if (it.pkTable == it.fkTable) println("Warn: $it")
-        else tables[it.fkTable]!!.dependsOn += tables[it.pkTable]!!
+        else {
+          tables[it.fkTable]!!.dependsOn += tables[it.pkTable]!!
+          tables[it.pkTable]!!.dependants += it
+        }
       }
 
       val orderedTablesByDependency = topologicalSort(tables.values)
       println("${tables.size} ${orderedTablesByDependency.size}")
       println(orderedTablesByDependency.joinToString("\n"))
+
+      populateKeys(conn, orderedTablesByDependency, 10)
     }
   }
 
   private fun listTables(metaData: DatabaseMetaData) =
     metaData.getTables(null, metaData.userName, null, arrayOf("TABLE")).readAll {
-      Table(it["TABLE_NAME"])
+      it["TABLE_NAME"]!!.let { name -> Table(name, getPrimaryKeyColumnName(metaData, name)) }
     }.associateBy { it.name }
+
+  private fun getPrimaryKeyColumnName(metaData: DatabaseMetaData, tableName: String) =
+    metaData.getPrimaryKeys(null, metaData.userName, tableName).readAll { it["COLUMN_NAME"] }.firstOrNull()
 
   private fun listForeignKeys(metaData: DatabaseMetaData) =
     metaData.getImportedKeys(null, metaData.userName, null).readAll {
@@ -49,6 +57,14 @@ class Migrator(private val dbUrl: String) {
     }
     return result
   }
+
+  private fun populateKeys(conn: Connection, tablesByDependency: List<Table>, num: Int) {
+    tablesByDependency.asReversed().forEach { table ->
+      if (table.primaryKey != null)
+        table.keysToExtract.addAll(
+          conn.prepareStatement("""select * from (select "${table.primaryKey}" from "${table.name}" order by "${table.primaryKey}" desc) where rownum <= $num""").readAll { it[1] })
+    }
+  }
 }
 
 data class ForeignKey(
@@ -60,8 +76,10 @@ data class ForeignKey(
   override fun toString() = "$fkTable.$fkColumn -> $pkTable.$pkColumn"
 }
 
-data class Table(val name: String) {
+data class Table(val name: String, val primaryKey: String?) {
   val dependsOn = mutableSetOf<Table>()
+  val dependants = mutableSetOf<ForeignKey>()
+  val keysToExtract = mutableSetOf<Any>()
 
   override fun toString() = "$name -> ${dependsOn.joinToString { it.name }}"
 }
