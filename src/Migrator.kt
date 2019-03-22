@@ -8,15 +8,16 @@ class Migrator(private val dbUrl: String) {
     DriverManager.getConnection(dbUrl).use { conn ->
       val metaData = conn.metaData
       val tables = listTables(metaData)
-      val foreignKeys = listForeignKeys(metaData)
 
+      val foreignKeys = listForeignKeys(metaData)
       foreignKeys.forEach {
-        tables[it.pkTable]!!.dependants += tables[it.fkTable]!!
-        tables[it.fkTable]!!.dependsOn += tables[it.pkTable]!!
+        if (it.pkTable == it.fkTable) println("Warn: $it")
+        else tables[it.fkTable]!!.dependsOn += tables[it.pkTable]!!
       }
 
-      val tableList = topologicalSort(tables.values)
+      val tableList = topologicalSortDepthFirst(tables.values)
       println("${tables.size} ${tableList.size}")
+      println(tableList.joinToString("\n"))
     }
   }
 
@@ -30,23 +31,22 @@ class Migrator(private val dbUrl: String) {
       ForeignKey(it["FKTABLE_NAME"], it["FKCOLUMN_NAME"], it["PKTABLE_NAME"], it["PKCOLUMN_NAME"])
     }
 
-  private fun topologicalSort(tables: Collection<Table>): List<Table> {
-    val result = mutableListOf<Table>()
-    val noDepsTables = LinkedList(tables.filter { it.hasNoDependants() })
-    while (noDepsTables.isNotEmpty()) {
-      val n = noDepsTables.removeFirst()
-      result += n
-      while (n.dependsOn.isNotEmpty()) {
-        val m = n.takeDependency()
-        if (m.hasNoDependants())
-          noDepsTables += m
-      }
+  private fun topologicalSortDepthFirst(tables: Collection<Table>): List<Table> {
+    val result = LinkedList<Table>()
+    val marked = mutableMapOf<Table, Boolean>()
+
+    fun visit(n: Table) {
+      if (marked[n] == true) return
+      if (marked[n] == false) throw IllegalStateException("Not a DAG: $n\nGot so far: $result")
+      marked[n] = false
+      n.dependsOn.forEach { visit(it) }
+      marked[n] = true
+      result.addFirst(n)
     }
-    println("${tables.size} ${result.size}")
-    println(result)
-    val leftDeps = tables.filter { !it.hasNoDependants() }
-    if (leftDeps.isNotEmpty())
-      throw IllegalStateException("Possible graph cycles, missing tables: $leftDeps")
+
+    while (marked.size < tables.size) {
+      tables.find { !marked.containsKey(it) }?.let { visit(it) }
+    }
     return result
   }
 }
@@ -61,15 +61,7 @@ data class ForeignKey(
 }
 
 data class Table(val name: String) {
-  val dependants = mutableSetOf<Table>()
   val dependsOn =  mutableSetOf<Table>()
-
-  fun hasNoDependants() = dependants.isEmpty()
-
-  fun takeDependency() = dependsOn.first().also {
-    dependsOn.remove(it)
-    it.dependants.remove(this)
-  }
 
   override fun toString() = "$name -> ${dependsOn.joinToString { it.name }}"
 }
