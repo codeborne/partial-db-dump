@@ -92,8 +92,8 @@ class Migrator(private val dbUrl: String) {
       val columnNames = (1..metaData.columnCount).map { metaData.getColumnName(it) }.toQuoted()
       var insert = "insert into \"${table.name}\" (${columnNames}) values\n"
       while (rs.next()) {
-        val values = (1..metaData.columnCount).map { rs.getObject(it) }.joinToString()
-        insert += "(${values})\n"
+        val values = (1..metaData.columnCount).map { rs.getObject(it) }.joinToString() // TODO: NPE if XML field in Oracle
+        insert += "($values)\n"
       }
       insert += ";"
       println(insert) // TODO: what if no results
