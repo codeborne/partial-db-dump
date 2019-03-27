@@ -7,7 +7,7 @@ class Migrator(private val dbUrl: String) {
   fun migrate() {
     DriverManager.getConnection(dbUrl).use { conn ->
       val metaData = conn.metaData
-      val tables = listTables(metaData)
+      val tables = tablesByName(metaData)
 
       val foreignKeys = listForeignKeys(metaData)
       foreignKeys.forEach {
@@ -22,13 +22,17 @@ class Migrator(private val dbUrl: String) {
 
       val orderedTablesByDependency = topologicalSort(tables.values)
       println("${tables.size} ${orderedTablesByDependency.size}")
+      println(tables.values.joinToString("\n") { "${it.name} ${it.foreignKeys}" })
 
-      findForeignKeys(conn, tables, orderedTablesByDependency, 10)
+      val numLastRows = 10
+      findForeignKeys(conn, tables, orderedTablesByDependency, numLastRows)
       println(orderedTablesByDependency.joinToString("\n") { "${it.name}: ${it.additionalKeys}" })
+
+      fetchData(conn, orderedTablesByDependency, numLastRows)
     }
   }
 
-  private fun listTables(metaData: DatabaseMetaData) =
+  private fun tablesByName(metaData: DatabaseMetaData) =
     metaData.getTables(null, metaData.userName, null, arrayOf("TABLE")).readAll {
       it["TABLE_NAME"]!!.let { name -> Table(name, getPrimaryKeyColumns(metaData, name)) }
     }.associateBy { it.name }
@@ -63,20 +67,33 @@ class Migrator(private val dbUrl: String) {
   private fun findForeignKeys(conn: Connection, tables: Map<String, Table>, tableOrder: List<Table>, num: Int) {
     tableOrder.asReversed().forEach { table ->
       if (table.foreignKeys.isNotEmpty()) {
-        val orderBy = table.primaryKey.takeIf { it.isNotEmpty() }?.toQuoted() ?: "1"
         val columns = table.foreignKeys.map { it.fkColumn }.toSet()
-        val sql = """select * from (select ${columns.toQuoted()} from "${table.name}" order by $orderBy desc) where rownum <= $num"""
-        table.additionalKeys.addAll(conn.readAll(sql) { rs ->
+        val sql = """select * from (select ${columns.toQuoted()} from "${table.name}" order by ${table.orderBy} desc) where rownum <= $num"""
+        conn.readAll(sql) { rs ->
           table.foreignKeys.forEach {
             rs[it.fkColumn]?.let { value -> tables[it.pkTable]!!.additionalKeys += value }
           }
-          rs[1]
-        })
+        }
       }
     }
   }
 
-  private fun Iterable<String>.toQuoted() = joinToString { """"$it"""" }
+  private fun fetchData(conn: Connection, tableOrder: List<Table>, num: Int) {
+    tableOrder.asReversed().forEach { table ->
+      if (table.additionalKeys.isNotEmpty())
+        fetchData(conn, """select * from "${table.name}" where ${table.primaryKey.toQuoted()} in (${table.additionalKeys.joinToString()})""", table)
+      fetchData(conn, """select * from (select * from "${table.name}" order by ${table.orderBy} desc) where rownum <= $num""", table)
+    }
+  }
+
+  private fun fetchData(conn: Connection, sql: String, table: Table) {
+    conn.readAll(sql) { rs ->
+      val metaData = rs.metaData
+      val columnNames = (1..metaData.columnCount).map { metaData.getColumnName(it) }.toQuoted()
+      val values = (1..metaData.columnCount).map { rs.getObject(it) }.joinToString()
+      println("""insert into "${table.name}" (${columnNames}) values (${values})""")
+    }
+  }
 }
 
 data class ForeignKey(
@@ -92,6 +109,9 @@ data class Table(val name: String, val primaryKey: Set<String>) {
   val dependsOn = mutableSetOf<Table>()
   val foreignKeys = mutableSetOf<ForeignKey>()
   val additionalKeys = mutableSetOf<Any>()
+  val orderBy get() = primaryKey.takeIf { it.isNotEmpty() }?.toQuoted() ?: "1"
 
   override fun toString() = "$name -> ${dependsOn.joinToString { it.name }}"
 }
+
+private fun Iterable<String>.toQuoted() = joinToString { """"$it"""" }
