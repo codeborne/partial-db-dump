@@ -87,11 +87,16 @@ class Migrator(private val dbUrl: String) {
   }
 
   private fun fetchData(conn: Connection, sql: String, table: Table) {
-    conn.readAll(sql) { rs ->
+    conn.prepareStatement(sql).executeQuery().use { rs ->
       val metaData = rs.metaData
       val columnNames = (1..metaData.columnCount).map { metaData.getColumnName(it) }.toQuoted()
-      val values = (1..metaData.columnCount).map { rs.getObject(it) }.joinToString()
-      println("""insert into "${table.name}" (${columnNames}) values (${values})""")
+      var insert = "insert into \"${table.name}\" (${columnNames}) values\n"
+      while (rs.next()) {
+        val values = (1..metaData.columnCount).map { rs.getObject(it) }.joinToString()
+        insert += "(${values})\n"
+      }
+      insert += ";"
+      println(insert) // TODO: what if no results
     }
   }
 }
