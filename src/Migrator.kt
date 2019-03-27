@@ -30,11 +30,11 @@ class Migrator(private val dbUrl: String) {
 
   private fun listTables(metaData: DatabaseMetaData) =
     metaData.getTables(null, metaData.userName, null, arrayOf("TABLE")).readAll {
-      it["TABLE_NAME"]!!.let { name -> Table(name, getPrimaryKeyColumnName(metaData, name)) }
+      it["TABLE_NAME"]!!.let { name -> Table(name, getPrimaryKeyColumns(metaData, name)) }
     }.associateBy { it.name }
 
-  private fun getPrimaryKeyColumnName(metaData: DatabaseMetaData, tableName: String) =
-    metaData.getPrimaryKeys(null, metaData.userName, tableName).readAll { it["COLUMN_NAME"] }.firstOrNull()
+  private fun getPrimaryKeyColumns(metaData: DatabaseMetaData, tableName: String) =
+    metaData.getPrimaryKeys(null, metaData.userName, tableName).readAll { it["COLUMN_NAME"] }.toSet()
 
   private fun listForeignKeys(metaData: DatabaseMetaData) =
     metaData.getImportedKeys(null, metaData.userName, null).readAll {
@@ -62,19 +62,25 @@ class Migrator(private val dbUrl: String) {
 
   private fun fetchKeys(conn: Connection, tables: Map<String, Table>, tableOrder: List<Table>, num: Int) {
     tableOrder.asReversed().forEach { table ->
-      if (table.primaryKey != null) {
-        val columns = setOf(table.primaryKey) + table.foreignKeys.map { it.fkColumn }
-        val columnsString = columns.joinToString { """"$it"""" }
-        val sql = """select * from (select $columnsString from "${table.name}" order by "${table.primaryKey}" desc) where rownum <= $num"""
-        table.keysToExtract.addAll(conn.prepareStatement(sql).readAll {rs ->
-          table.foreignKeys.forEach {
-            rs[it.fkColumn]?.let { value -> tables[it.pkTable]!!.keysToExtract += value }
-          }
-          rs[1]
-        })
+      if (table.primaryKey.isEmpty() && table.foreignKeys.isEmpty()) {
+        println("Warn: ${table.name} has no primary key nor foreign keys")
+        return@forEach
       }
+      else if (table.primaryKey.isEmpty()) println("Warn: ${table.name} has no primary key, sorting by first column")
+
+      val orderBy = table.primaryKey.takeIf { it.isNotEmpty() }?.toQuoted() ?: "1"
+      val columns = table.primaryKey + table.foreignKeys.map { it.fkColumn }
+      val sql = """select * from (select ${columns.toQuoted()} from "${table.name}" order by $orderBy desc) where rownum <= $num"""
+      table.keysToExtract.addAll(conn.readAll(sql) {rs ->
+        table.foreignKeys.forEach {
+          rs[it.fkColumn]?.let { value -> tables[it.pkTable]!!.keysToExtract += value }
+        }
+        rs[1]
+      })
     }
   }
+
+  private fun Iterable<String>.toQuoted() = joinToString { """"$it"""" }
 }
 
 data class ForeignKey(
@@ -86,7 +92,7 @@ data class ForeignKey(
   override fun toString() = "$fkTable.$fkColumn -> $pkTable.$pkColumn"
 }
 
-data class Table(val name: String, val primaryKey: String?) {
+data class Table(val name: String, val primaryKey: Set<String>) {
   val dependsOn = mutableSetOf<Table>()
   val foreignKeys = mutableSetOf<ForeignKey>()
   val keysToExtract = mutableSetOf<Any>()
