@@ -23,8 +23,8 @@ class Migrator(private val dbUrl: String) {
       val orderedTablesByDependency = topologicalSort(tables.values)
       println("${tables.size} ${orderedTablesByDependency.size}")
 
-      fetchKeys(conn, tables, orderedTablesByDependency, 10)
-      println(orderedTablesByDependency.joinToString("\n") { "${it.name}: ${it.keysToExtract}" })
+      findForeignKeys(conn, tables, orderedTablesByDependency, 10)
+      println(orderedTablesByDependency.joinToString("\n") { "${it.name}: ${it.additionalKeys}" })
     }
   }
 
@@ -60,23 +60,19 @@ class Migrator(private val dbUrl: String) {
     return result
   }
 
-  private fun fetchKeys(conn: Connection, tables: Map<String, Table>, tableOrder: List<Table>, num: Int) {
+  private fun findForeignKeys(conn: Connection, tables: Map<String, Table>, tableOrder: List<Table>, num: Int) {
     tableOrder.asReversed().forEach { table ->
-      if (table.primaryKey.isEmpty() && table.foreignKeys.isEmpty()) {
-        println("Warn: ${table.name} has no primary key nor foreign keys")
-        return@forEach
+      if (table.foreignKeys.isNotEmpty()) {
+        val orderBy = table.primaryKey.takeIf { it.isNotEmpty() }?.toQuoted() ?: "1"
+        val columns = table.foreignKeys.map { it.fkColumn }.toSet()
+        val sql = """select * from (select ${columns.toQuoted()} from "${table.name}" order by $orderBy desc) where rownum <= $num"""
+        table.additionalKeys.addAll(conn.readAll(sql) { rs ->
+          table.foreignKeys.forEach {
+            rs[it.fkColumn]?.let { value -> tables[it.pkTable]!!.additionalKeys += value }
+          }
+          rs[1]
+        })
       }
-      else if (table.primaryKey.isEmpty()) println("Warn: ${table.name} has no primary key, sorting by first column")
-
-      val orderBy = table.primaryKey.takeIf { it.isNotEmpty() }?.toQuoted() ?: "1"
-      val columns = table.primaryKey + table.foreignKeys.map { it.fkColumn }
-      val sql = """select * from (select ${columns.toQuoted()} from "${table.name}" order by $orderBy desc) where rownum <= $num"""
-      table.keysToExtract.addAll(conn.readAll(sql) {rs ->
-        table.foreignKeys.forEach {
-          rs[it.fkColumn]?.let { value -> tables[it.pkTable]!!.keysToExtract += value }
-        }
-        rs[1]
-      })
     }
   }
 
@@ -95,7 +91,7 @@ data class ForeignKey(
 data class Table(val name: String, val primaryKey: Set<String>) {
   val dependsOn = mutableSetOf<Table>()
   val foreignKeys = mutableSetOf<ForeignKey>()
-  val keysToExtract = mutableSetOf<Any>()
+  val additionalKeys = mutableSetOf<Any>()
 
   override fun toString() = "$name -> ${dependsOn.joinToString { it.name }}"
 }
